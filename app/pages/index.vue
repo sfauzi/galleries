@@ -11,6 +11,13 @@ interface BentoItem {
   rowSpan: number;
 }
 
+interface LayoutOverride {
+  colSpan: number;
+  rowSpan: number;
+}
+
+const LAYOUT_STORAGE_KEY = 'bentogrid_layout_overrides';
+
 const { fetchImages, deleteImage, updateImageSpan } = useSupabaseGallery();
 const { user, isAuthenticated, logout, initAuth } = useAuth()
 
@@ -18,28 +25,76 @@ const items = ref<BentoItem[]>([]);
 const selectedItem = ref<BentoItem | null>(null);
 const resizingItem = ref<BentoItem | null>(null);
 const resizePanelEl = ref<HTMLElement | null>(null);
-
-// Posisi panel — koordinat viewport murni untuk position:fixed
 const panelPos = ref({ top: 0, left: 0, placement: 'below' as 'below' | 'above' });
-
 const loading = ref(true);
+const showResetConfirm = ref(false);
+
 const colOptions = [1, 2, 3, 4];
 const rowOptions = [1, 2, 3, 4];
 
-const loadImages = async () => {
-  loading.value = true
-  const result = await fetchImages()
-  if (result.success && result.data) {
-    items.value = result.data.map((item: any) => ({
-      id: item.id,
-      src: item.image_url,
-      alt: item.alt,
-      colSpan: item.col_span,
-      rowSpan: item.row_span
-    }))
+// ─── LocalStorage helpers ───────────────────────────────────────────────────
+
+function getLayoutOverrides(): Record<number, LayoutOverride> {
+  try {
+    const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
   }
-  loading.value = false
 }
+
+function saveLayoutOverride(id: number, colSpan: number, rowSpan: number) {
+  try {
+    const overrides = getLayoutOverrides();
+    overrides[id] = { colSpan, rowSpan };
+    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(overrides));
+  } catch (e) {
+    console.warn('Gagal menyimpan layout ke localStorage', e);
+  }
+}
+
+function removeLayoutOverride(id: number) {
+  try {
+    const overrides = getLayoutOverrides();
+    delete overrides[id];
+    localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(overrides));
+  } catch { }
+}
+
+function clearAllLayoutOverrides() {
+  try {
+    localStorage.removeItem(LAYOUT_STORAGE_KEY);
+  } catch { }
+}
+
+function hasLayoutOverrides(): boolean {
+  const overrides = getLayoutOverrides();
+  return Object.keys(overrides).length > 0;
+}
+
+// ─── Load images ─────────────────────────────────────────────────────────────
+
+const loadImages = async () => {
+  loading.value = true;
+  const result = await fetchImages();
+  if (result.success && result.data) {
+    const overrides = getLayoutOverrides();
+    items.value = result.data.map((item: any) => {
+      const override = overrides[item.id];
+      return {
+        id: item.id,
+        src: item.image_url,
+        alt: item.alt,
+        // Pakai override localStorage jika ada, fallback ke nilai Supabase
+        colSpan: override?.colSpan ?? item.col_span,
+        rowSpan: override?.rowSpan ?? item.row_span,
+      };
+    });
+  }
+  loading.value = false;
+};
+
+// ─── Delete ──────────────────────────────────────────────────────────────────
 
 const handleDeleteImage = async (item: BentoItem, event: Event) => {
   event.stopPropagation();
@@ -47,43 +102,39 @@ const handleDeleteImage = async (item: BentoItem, event: Event) => {
     const result = await deleteImage(item.id, item.src);
     if (result.success) {
       items.value = items.value.filter((i) => i.id !== item.id);
+      removeLayoutOverride(item.id); // bersihkan juga override-nya
     } else {
       alert("Gagal menghapus gambar");
     }
   }
 };
 
+// ─── Resize panel ────────────────────────────────────────────────────────────
+
 async function openResize(item: BentoItem, event: MouseEvent) {
-  // Toggle off jika item yang sama diklik lagi
   if (resizingItem.value?.id === item.id) {
     resizingItem.value = null;
     return;
   }
 
-  // Set item dulu agar panel ter-render ke DOM
   resizingItem.value = { ...item };
 
-  // Koordinat tombol di viewport (tanpa scroll — karena fixed)
   const btn = event.currentTarget as HTMLElement;
   const btnRect = btn.getBoundingClientRect();
 
-  // Tunggu panel ter-render agar kita bisa ukur ukurannya
   await nextTick();
 
-  const PANEL_W = 176;  // w-44
+  const PANEL_W = 176;
   const PANEL_H = resizePanelEl.value?.offsetHeight ?? 190;
   const GAP = 6;
-  const MARGIN = 8; // jarak aman dari tepi layar
-
+  const MARGIN = 8;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
 
-  // Horizontal: rata kanan tombol, tapi jangan keluar kiri/kanan layar
   let left = btnRect.right - PANEL_W;
   if (left < MARGIN) left = MARGIN;
   if (left + PANEL_W > vw - MARGIN) left = vw - PANEL_W - MARGIN;
 
-  // Vertical: preferensi di bawah tombol, fallback di atas jika tidak muat
   let top: number;
   let placement: 'below' | 'above';
   if (btnRect.bottom + GAP + PANEL_H <= vh - MARGIN) {
@@ -92,7 +143,6 @@ async function openResize(item: BentoItem, event: MouseEvent) {
   } else {
     top = btnRect.top - GAP - PANEL_H;
     placement = 'above';
-    // Jika masih tidak muat di atas, paksa di bawah dengan scroll
     if (top < MARGIN) top = MARGIN;
   }
 
@@ -100,19 +150,41 @@ async function openResize(item: BentoItem, event: MouseEvent) {
 }
 
 async function applyResize(item: BentoItem, colSpan: number, rowSpan: number) {
-  const result = await updateImageSpan(item.id, colSpan, rowSpan);
+  // Update local state dulu (optimistic)
   const target = items.value.find((i) => i.id === item.id);
   if (target) {
-    if (result.success && result.data) {
-      target.colSpan = result.data.col_span;
-      target.rowSpan = result.data.row_span;
-    } else {
-      target.colSpan = colSpan;
-      target.rowSpan = rowSpan;
-    }
+    target.colSpan = colSpan;
+    target.rowSpan = rowSpan;
   }
+
+  // Simpan ke localStorage
+  saveLayoutOverride(item.id, colSpan, rowSpan);
+
+  // Sync ke Supabase (background, tidak blocking UI)
+  updateImageSpan(item.id, colSpan, rowSpan).catch(() => {
+    console.warn('Gagal sync ke Supabase, layout tetap tersimpan di lokal');
+  });
+
   resizingItem.value = null;
 }
+
+// ─── Reset layout ────────────────────────────────────────────────────────────
+
+const hasOverrides = ref(false);
+
+function checkHasOverrides() {
+  hasOverrides.value = hasLayoutOverrides();
+}
+
+async function resetLayout() {
+  showResetConfirm.value = false;
+  clearAllLayoutOverrides();
+  hasOverrides.value = false;
+  // Reload dari Supabase (nilai default)
+  await loadImages();
+}
+
+// ─── Lightbox ────────────────────────────────────────────────────────────────
 
 function openLightbox(item: BentoItem) {
   selectedItem.value = item;
@@ -121,6 +193,8 @@ function openLightbox(item: BentoItem) {
 function closeLightbox() {
   selectedItem.value = null;
 }
+
+// ─── Grid helpers ─────────────────────────────────────────────────────────────
 
 function gridColClass(span: number) {
   const map: Record<number, string> = { 1: "col-span-1", 2: "col-span-2", 3: "col-span-3", 4: "col-span-4" };
@@ -133,16 +207,17 @@ function gridRowClass(span: number) {
 }
 
 const handleLogout = async () => {
-  await logout()
-  navigateTo('/')
-}
+  await logout();
+  navigateTo('/');
+};
 
 const navigateToUpload = () => navigateTo("/upload");
 
 onMounted(async () => {
-  await initAuth()
-  await loadImages()
-})
+  await initAuth();
+  await loadImages();
+  checkHasOverrides();
+});
 </script>
 
 <template>
@@ -161,6 +236,7 @@ onMounted(async () => {
       .span-btn { transition: all 0.15s ease; }
       .span-btn:hover { background: #c8ff00; color: #0a0a0a; }
       .span-btn.active { background: #c8ff00; color: #0a0a0a; font-weight: 700; }
+      .confirm-dialog { animation: fadeIn 0.15s ease; }
     </component>
 
     <!-- Header -->
@@ -169,7 +245,22 @@ onMounted(async () => {
         <span class="text-2xl font-extrabold tracking-tight text-[#c8ff00]">BENTO</span>
         <span class="text-2xl font-extrabold tracking-tight text-white">GRID</span>
       </div>
-      <div class="flex items-center gap-4">
+
+      <div class="flex items-center gap-3">
+        <!-- Reset Layout Button — hanya tampil jika ada override -->
+        <Transition name="fade-slide">
+          <button v-if="hasOverrides" @click="showResetConfirm = true"
+            class="px-4 py-2.5 bg-white/5 border border-white/15 text-white/70 rounded-xl font-semibold hover:bg-white/10 hover:text-white hover:border-white/30 transition-all flex items-center gap-2 text-sm"
+            title="Reset layout ke default">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+              <path d="M3 3v5h5" />
+            </svg>
+            Reset Layout
+          </button>
+        </Transition>
+
         <div v-if="isAuthenticated" class="flex items-center gap-3">
           <span class="text-sm text-white/60">{{ user?.email }}</span>
           <button @click="navigateToUpload"
@@ -191,6 +282,7 @@ onMounted(async () => {
             Logout
           </button>
         </div>
+
         <button v-else @click="navigateTo('/login')"
           class="px-5 py-2.5 bg-[#c8ff00] text-black rounded-xl font-semibold hover:bg-[#d4ff33] transition-all flex items-center gap-2">
           <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -232,6 +324,19 @@ onMounted(async () => {
 
     <!-- Bento Grid -->
     <main v-else class="p-4 md:p-6">
+      <!-- Layout saved indicator -->
+      <!-- <Transition name="fade-slide">
+        <div v-if="hasOverrides" class="flex items-center gap-2 mb-4 text-xs text-white/40">
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-[#c8ff00]/60" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+            <polyline points="17 21 17 13 7 13 7 21" />
+            <polyline points="7 3 7 8 15 8" />
+          </svg>
+          Layout tersimpan secara lokal
+        </div>
+      </Transition> -->
+
       <div class="grid grid-cols-4 auto-rows-[160px] md:auto-rows-[200px] gap-3" style="grid-auto-flow: dense">
         <div v-for="item in items" :key="item.id" :class="[gridColClass(item.colSpan), gridRowClass(item.rowSpan)]"
           class="bento-item relative overflow-hidden rounded-2xl group cursor-pointer">
@@ -242,15 +347,19 @@ onMounted(async () => {
             class="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300"
             @click="openLightbox(item)"></div>
 
+          <!-- Label + override indicator -->
           <div
-            class="absolute bottom-3 left-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
+            class="absolute bottom-3 left-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none flex items-center gap-1.5">
             <span class="text-xs font-semibold text-white/80 bg-black/50 backdrop-blur-sm px-2 py-1 rounded-lg">
               {{ item.colSpan }}×{{ item.rowSpan }} · #{{ item.id }}
             </span>
+            <!-- Dot kuning jika item ini punya override lokal -->
+            <span v-if="getLayoutOverrides()[item.id]" class="w-1.5 h-1.5 rounded-full bg-[#c8ff00]"
+              title="Layout diubah secara lokal"></span>
           </div>
 
           <!-- Delete -->
-          <button
+          <button v-if="isAuthenticated"
             class="absolute top-2 right-12 w-8 h-8 rounded-lg bg-black/60 backdrop-blur-sm border border-white/20 flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-all duration-200 hover:bg-red-500 hover:text-white hover:border-red-500 z-10"
             title="Hapus gambar" @click.stop="handleDeleteImage(item, $event)">
             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none"
@@ -276,19 +385,13 @@ onMounted(async () => {
       </div>
     </main>
 
-    <!-- ✅ Resize Panel — Teleport + position:fixed + koordinat viewport murni -->
+    <!-- ─── Resize Panel Teleport ──────────────────────────────── -->
     <Teleport to="body">
-      <!-- Backdrop tipis untuk close on outside click -->
       <div v-if="resizingItem" class="fixed inset-0 z-[9990]" @click="resizingItem = null" />
 
-      <!-- Panel -->
       <div v-if="resizingItem" ref="resizePanelEl"
         class="resize-panel fixed z-[9999] bg-[#111]/95 backdrop-blur-md border border-white/15 rounded-xl p-3 shadow-2xl w-44"
-        :style="{
-          top: panelPos.top + 'px',
-          left: panelPos.left + 'px',
-        }" @click.stop>
-        <!-- Arrow indicator arah panel -->
+        :style="{ top: panelPos.top + 'px', left: panelPos.left + 'px' }" @click.stop>
         <div class="absolute w-2 h-2 bg-[#111] border-l border-t border-white/15 rotate-45" :style="panelPos.placement === 'below'
           ? 'top: -5px; right: 14px; border-bottom: none; border-right: none;'
           : 'bottom: -5px; right: 14px; border-top: none; border-left: none; transform: rotate(225deg);'" />
@@ -309,11 +412,46 @@ onMounted(async () => {
 
         <button
           class="w-full h-8 rounded-lg bg-[#c8ff00] text-black text-xs font-bold hover:bg-[#d4ff33] transition-colors"
-          @click="applyResize(resizingItem, resizingItem!.colSpan, resizingItem!.rowSpan)">Terapkan</button>
+          @click="applyResize(resizingItem, resizingItem!.colSpan, resizingItem!.rowSpan); checkHasOverrides()">Terapkan</button>
       </div>
     </Teleport>
 
-    <!-- Lightbox -->
+    <!-- ─── Reset Confirm Dialog ───────────────────────────────── -->
+    <Teleport to="body">
+      <Transition name="fade">
+        <div v-if="showResetConfirm"
+          class="confirm-dialog fixed inset-0 z-[10000] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+          @click.self="showResetConfirm = false">
+          <div class="bg-[#161616] border border-white/10 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+            <!-- Icon -->
+            <div
+              class="w-12 h-12 rounded-xl bg-orange-500/10 border border-orange-500/20 flex items-center justify-center mx-auto mb-4">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-orange-400" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+              </svg>
+            </div>
+
+            <h3 class="text-white font-bold text-center text-lg mb-1">Reset Layout?</h3>
+            <p class="text-white/50 text-sm text-center mb-6 leading-relaxed">
+              Semua perubahan ukuran yang tersimpan secara lokal akan dihapus dan layout akan kembali ke pengaturan
+              default dari server.
+            </p>
+
+            <div class="flex gap-3">
+              <button @click="showResetConfirm = false"
+                class="flex-1 h-10 rounded-xl border border-white/15 text-white/70 text-sm font-semibold hover:bg-white/5 transition-colors">Batal</button>
+              <button @click="resetLayout"
+                class="flex-1 h-10 rounded-xl bg-orange-500 text-white text-sm font-bold hover:bg-orange-400 transition-colors">Ya,
+                Reset</button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <!-- ─── Lightbox ───────────────────────────────────────────── -->
     <Teleport to="body">
       <div v-if="selectedItem"
         class="lightbox-bg fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4"
@@ -334,3 +472,26 @@ onMounted(async () => {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.fade-slide-enter-active,
+.fade-slide-leave-active {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.fade-slide-enter-from,
+.fade-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+</style>
