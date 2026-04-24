@@ -242,8 +242,8 @@ onMounted(async () => {
     <!-- Header -->
     <header class="px-8 py-6 flex items-center justify-between border-b border-white/10">
       <div>
-        <span class="text-2xl font-extrabold tracking-tight text-[#c8ff00]">BENTO</span>
-        <span class="text-2xl font-extrabold tracking-tight text-white">GRID</span>
+        <span class="text-2xl font-extrabold tracking-tight text-[#c8ff00]">PIN</span>
+        <span class="text-2xl font-extrabold tracking-tight text-white">GALLERIES</span>
       </div>
 
       <div class="flex items-center gap-3">

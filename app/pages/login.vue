@@ -32,9 +32,9 @@ const handleLogin = async () => {
         <div class="max-w-md w-full">
             <!-- Logo/Brand -->
             <div class="text-center mb-8">
-                <h1 class="text-4xl font-bold mb-2">
-                    <span class="text-[#c8ff00]">BENTO</span>
-                    <span class="text-white">GRID</span>
+                <h1 class="text-4xl font-bold mb-2 font-['Syne',sans-serif]">
+                    <span class="text-[#c8ff00]">PIN</span>
+                    <span class="text-white">GALLERIES</span>
                 </h1>
                 <p class="text-white/60">Login to upload images</p>
             </div>
@@ -91,13 +91,13 @@ const handleLogin = async () => {
                 </form>
 
                 <!-- Demo Info -->
-                <div class="mt-6 p-4 bg-white/5 rounded-xl">
+                <!-- <div class="mt-6 p-4 bg-white/5 rounded-xl">
                     <p class="text-xs text-white/60 text-center">
                         <strong>Demo Credentials:</strong><br />
                         Email: sfauzi@gmail.com<br />
                         Password: (the password you set in Supabase)
                     </p>
-                </div>
+                </div> -->
             </div>
         </div>
     </div>
