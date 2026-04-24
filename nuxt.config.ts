@@ -7,6 +7,12 @@ export default defineNuxtConfig({
     // preset: "static"
     preset: 'node-server'
   },
+  runtimeConfig: {
+    public: {
+      supabaseUrl: process.env.SUPABASE_URL,
+      supabaseKey: process.env.SUPABASE_KEY,
+    },
+  },
   modules: [
     '@nuxt/fonts',
     '@nuxt/image',
